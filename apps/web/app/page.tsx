@@ -120,6 +120,23 @@ export default function Home() {
     void run(executePoll, setResult);
   }
 
+  function refreshSerialPorts() {
+    void run(() => client.serialPorts(), (value) => {
+      const ports = value.ports.map((port) => port.name);
+      setSerialPorts(ports);
+      if (!serial.port && ports[0]) setSerial((current) => ({ ...current, port: ports[0] }));
+    });
+  }
+
+  function connectUsb() {
+    void run(() => client.openRtuMaster(serial), () => client.engine().then(setEngine));
+  }
+
+  function disconnectUsb() {
+    setAutoPoll(false);
+    void run(() => client.closeRtuMaster(), () => client.engine().then(setEngine));
+  }
+
   useEffect(() => {
     if (!autoPoll || !engine || !readFunctions.has(poll.functionCode)) return;
     let cancelled = false;
@@ -216,6 +233,27 @@ export default function Home() {
                 )}
                 {transport === "rtu" && <label className="field"><span>Slave ID</span><input type="number" min="1" max="247" value={poll.slaveId} onChange={(e) => setPoll({ ...poll, slaveId: Number(e.target.value) })} /></label>}
 
+                {transport === "rtu" && (
+                  <div className="writeBox">
+                    <label className="field">
+                      <span>USB / Serial port</span>
+                      <select value={serial.port} disabled={engine?.modbusRtu.masterOpen} onChange={(e) => setSerial({ ...serial, port: e.target.value })}>
+                        <option value="">Select USB-RS485 device</option>
+                        {serialPorts.map((port) => <option key={port}>{port}</option>)}
+                      </select>
+                    </label>
+                    <div className="modeActions">
+                      <button type="button" className="secondaryAction" disabled={busy || !engine || engine?.modbusRtu.masterOpen} onClick={refreshSerialPorts}>Refresh USB</button>
+                      {engine?.modbusRtu.masterOpen ? (
+                        <button type="button" className="dangerAction" disabled={busy} onClick={disconnectUsb}>Disconnect USB</button>
+                      ) : (
+                        <button type="button" className="primaryAction" disabled={busy || !engine || !serial.port || engine?.modbusRtu.slaveOpen} onClick={connectUsb}>Connect USB</button>
+                      )}
+                    </div>
+                    <p>{engine?.modbusRtu.masterOpen ? `Connected to ${serial.port}` : "Connect a USB-RS485 adapter before sending RTU requests."}</p>
+                  </div>
+                )}
+
                 <div className="fieldGrid two">
                   <label className="field"><span>Function</span><select value={poll.functionCode} onChange={(e) => setPoll({ ...poll, functionCode: Number(e.target.value) })}>{[1,2,3,4,5,6,15,16].map((fc) => <option key={fc} value={fc}>FC{String(fc).padStart(2,"0")}</option>)}</select></label>
                   <label className="field"><span>Address</span><input type="number" min="0" max="65535" value={poll.address} onChange={(e) => setPoll({ ...poll, address: Number(e.target.value) })} /></label>
@@ -224,12 +262,12 @@ export default function Home() {
                   {[15,16].includes(poll.functionCode) && <label className="field span2"><span>Values</span><input value={poll.values} onChange={(e) => setPoll({ ...poll, values: e.target.value })} placeholder="100,200,300" /></label>}
                 </div>
 
-                <button className="primaryAction full" disabled={busy || !engine}>{[5,6,15,16].includes(poll.functionCode) ? "Write request" : "Read once"}</button>
+                <button className="primaryAction full" disabled={busy || !engine || (transport === "rtu" && !engine.modbusRtu.masterOpen)}>{[5,6,15,16].includes(poll.functionCode) ? "Write request" : "Read once"}</button>
               </form>
 
               <div className="pollBox">
                 <label className="field"><span>Poll interval</span><div className="inputSuffix"><input type="number" min="100" max="60000" value={pollInterval} onChange={(e) => setPollInterval(Number(e.target.value))} /><span>ms</span></div></label>
-                <button type="button" className={autoPoll ? "dangerAction" : "secondaryAction"} disabled={!engine || !readFunctions.has(poll.functionCode)} onClick={() => setAutoPoll((value) => !value)}>{autoPoll ? "Stop polling" : "Start polling"}</button>
+                <button type="button" className={autoPoll ? "dangerAction" : "secondaryAction"} disabled={!engine || !readFunctions.has(poll.functionCode) || (transport === "rtu" && !engine.modbusRtu.masterOpen)} onClick={() => setAutoPoll((value) => !value)}>{autoPoll ? "Stop polling" : "Start polling"}</button>
               </div>
             </aside>
 
@@ -338,7 +376,7 @@ export default function Home() {
           <div className="rtuWorkspace">
             <div className="rtuHeader">
               <ToolHeading eyebrow="USB / RS485" title="Modbus RTU" meta="Native Core serial access" />
-              <button type="button" className="secondaryAction" disabled={busy || !engine} onClick={() => void run(() => client.serialPorts(), (value) => { const ports = value.ports.map((p) => p.name); setSerialPorts(ports); if (!serial.port && ports[0]) setSerial({ ...serial, port: ports[0] }); })}>Refresh ports</button>
+              <button type="button" className="secondaryAction" disabled={busy || !engine || engine?.modbusRtu.masterOpen || engine?.modbusRtu.slaveOpen} onClick={refreshSerialPorts}>Refresh USB devices</button>
             </div>
             <div className="serialGrid">
               <label className="field wide"><span>Serial port</span><select value={serial.port} onChange={(e) => setSerial({ ...serial, port: e.target.value })}><option value="">Select port</option>{serialPorts.map((port) => <option key={port}>{port}</option>)}</select></label>
@@ -354,8 +392,8 @@ export default function Home() {
                 <div><strong>RTU Master</strong><span>{engine?.modbusRtu.masterOpen ? "Serial session open" : "Use Poll with RTU transport"}</span></div>
                 <span className={`modeBadge ${engine?.modbusRtu.masterOpen ? "live" : ""}`}>{engine?.modbusRtu.masterOpen ? "OPEN" : "CLOSED"}</span>
                 <div className="modeActions">
-                  <button type="button" className="primaryAction" disabled={busy || !engine || !serial.port || engine?.modbusRtu.slaveOpen || engine?.modbusRtu.masterOpen} onClick={() => void run(() => client.openRtuMaster(serial), () => client.engine().then(setEngine))}>Open Master</button>
-                  <button type="button" className="secondaryAction" disabled={busy || !engine?.modbusRtu.masterOpen} onClick={() => void run(() => client.closeRtuMaster(), () => client.engine().then(setEngine))}>Close Master</button>
+                  <button type="button" className="primaryAction" disabled={busy || !engine || !serial.port || engine?.modbusRtu.slaveOpen || engine?.modbusRtu.masterOpen} onClick={connectUsb}>Connect USB</button>
+                  <button type="button" className="dangerAction" disabled={busy || !engine?.modbusRtu.masterOpen} onClick={disconnectUsb}>Disconnect USB</button>
                 </div>
               </div>
               <div className="modePanel">
