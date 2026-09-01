@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { CoreClient, EngineInfo, ModbusResult, SerialConfig, SimulatorProfile } from "@/lib/core";
+import { BrowserRtuMaster } from "@/lib/browser-rtu";
 
 type Connection = { url: string; token: string };
 
@@ -26,6 +27,8 @@ export default function Home() {
   const [autoPoll, setAutoPoll] = useState(false);
   const [pollInterval, setPollInterval] = useState(1000);
   const [serialPorts, setSerialPorts] = useState<string[]>([]);
+  const [browserSerialConnected, setBrowserSerialConnected] = useState(false);
+  const [browserSerialLabel, setBrowserSerialLabel] = useState("");
   const [simulator, setSimulator] = useState<SimulatorProfile | null>(null);
   const [simSelection, setSimSelection] = useState("");
   const [simValues, setSimValues] = useState("");
@@ -36,6 +39,7 @@ export default function Home() {
   const [poll, setPoll] = useState({ host: "127.0.0.1", port: 1502, slaveId: 5, functionCode: 3, address: 1, quantity: 8, value: 256, values: "256,512" });
   const [slaveView, setSlaveView] = useState({ slaveId: 5, table: "holding", address: 1, quantity: 8, values: "" });
   const [slaveValues, setSlaveValues] = useState<number[]>([]);
+  const [browserRtu] = useState(() => new BrowserRtuMaster());
 
   const client = useMemo(() => new CoreClient(connection.url, connection.token), [connection]);
   const simulatorRanges = useMemo(() => simulator?.devices.flatMap((device) => device.ranges.map((range, index) => ({ device, range, key: `${device.key}:${index}` }))) ?? [], [simulator]);
@@ -112,8 +116,10 @@ export default function Home() {
 
   const executePoll = useCallback(() => {
     const body = requestBody();
-    return transport === "tcp" ? client.modbus(body) : client.rtu(body);
-  }, [client, requestBody, transport]);
+    if (transport === "tcp") return client.modbus(body);
+    if (browserSerialConnected) return browserRtu.request(body);
+    return client.rtu(body);
+  }, [browserRtu, browserSerialConnected, client, requestBody, transport]);
 
   function sendModbus(event: FormEvent) {
     event.preventDefault();
@@ -128,17 +134,49 @@ export default function Home() {
     });
   }
 
-  function connectUsb() {
+  async function connectUsb() {
+    setBusy(true);
+    setError("");
+    try {
+      const label = await browserRtu.connect(serial);
+      setBrowserSerialLabel(label);
+      setBrowserSerialConnected(true);
+      setTransport("rtu");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disconnectUsb() {
+    setAutoPoll(false);
+    setBusy(true);
+    setError("");
+    try {
+      await browserRtu.disconnect();
+      setBrowserSerialConnected(false);
+      setBrowserSerialLabel("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function connectNativeRtu() {
     void run(() => client.openRtuMaster(serial), () => client.engine().then(setEngine));
   }
 
-  function disconnectUsb() {
+  function disconnectNativeRtu() {
     setAutoPoll(false);
     void run(() => client.closeRtuMaster(), () => client.engine().then(setEngine));
   }
 
+  const rtuMasterConnected = browserSerialConnected || Boolean(engine?.modbusRtu.masterOpen);
+
   useEffect(() => {
-    if (!autoPoll || !engine || !readFunctions.has(poll.functionCode)) return;
+    if (!autoPoll || !readFunctions.has(poll.functionCode) || (transport === "tcp" ? !engine : !rtuMasterConnected)) return;
     let cancelled = false;
     const tick = async () => {
       try {
@@ -151,7 +189,7 @@ export default function Home() {
     void tick();
     const timer = window.setInterval(() => void tick(), Math.max(100, pollInterval));
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [autoPoll, pollInterval, poll.functionCode, engine, executePoll]);
+  }, [autoPoll, pollInterval, poll.functionCode, engine, executePoll, rtuMasterConnected, transport]);
 
   function readSlave(event: FormEvent) {
     event.preventDefault();
@@ -235,22 +273,14 @@ export default function Home() {
 
                 {transport === "rtu" && (
                   <div className="writeBox">
-                    <label className="field">
-                      <span>USB / Serial port</span>
-                      <select value={serial.port} disabled={engine?.modbusRtu.masterOpen} onChange={(e) => setSerial({ ...serial, port: e.target.value })}>
-                        <option value="">Select USB-RS485 device</option>
-                        {serialPorts.map((port) => <option key={port}>{port}</option>)}
-                      </select>
-                    </label>
                     <div className="modeActions">
-                      <button type="button" className="secondaryAction" disabled={busy || !engine || engine?.modbusRtu.masterOpen} onClick={refreshSerialPorts}>Refresh USB</button>
-                      {engine?.modbusRtu.masterOpen ? (
-                        <button type="button" className="dangerAction" disabled={busy} onClick={disconnectUsb}>Disconnect USB</button>
+                      {browserSerialConnected ? (
+                        <button type="button" className="dangerAction" disabled={busy} onClick={() => void disconnectUsb()}>Disconnect USB</button>
                       ) : (
-                        <button type="button" className="primaryAction" disabled={busy || !engine || !serial.port || engine?.modbusRtu.slaveOpen} onClick={connectUsb}>Connect USB</button>
+                        <button type="button" className="primaryAction" disabled={busy} onClick={() => void connectUsb()}>Connect USB</button>
                       )}
                     </div>
-                    <p>{engine?.modbusRtu.masterOpen ? `Connected to ${serial.port}` : "Connect a USB-RS485 adapter before sending RTU requests."}</p>
+                    <p>{browserSerialConnected ? `Connected: ${browserSerialLabel}` : "Connect USB opens the Chrome/Edge device chooser."}</p>
                   </div>
                 )}
 
@@ -262,12 +292,12 @@ export default function Home() {
                   {[15,16].includes(poll.functionCode) && <label className="field span2"><span>Values</span><input value={poll.values} onChange={(e) => setPoll({ ...poll, values: e.target.value })} placeholder="100,200,300" /></label>}
                 </div>
 
-                <button className="primaryAction full" disabled={busy || !engine || (transport === "rtu" && !engine.modbusRtu.masterOpen)}>{[5,6,15,16].includes(poll.functionCode) ? "Write request" : "Read once"}</button>
+                <button className="primaryAction full" disabled={busy || (transport === "tcp" ? !engine : !rtuMasterConnected)}>{[5,6,15,16].includes(poll.functionCode) ? "Write request" : "Read once"}</button>
               </form>
 
               <div className="pollBox">
                 <label className="field"><span>Poll interval</span><div className="inputSuffix"><input type="number" min="100" max="60000" value={pollInterval} onChange={(e) => setPollInterval(Number(e.target.value))} /><span>ms</span></div></label>
-                <button type="button" className={autoPoll ? "dangerAction" : "secondaryAction"} disabled={!engine || !readFunctions.has(poll.functionCode) || (transport === "rtu" && !engine.modbusRtu.masterOpen)} onClick={() => setAutoPoll((value) => !value)}>{autoPoll ? "Stop polling" : "Start polling"}</button>
+                <button type="button" className={autoPoll ? "dangerAction" : "secondaryAction"} disabled={!readFunctions.has(poll.functionCode) || (transport === "tcp" ? !engine : !rtuMasterConnected)} onClick={() => setAutoPoll((value) => !value)}>{autoPoll ? "Stop polling" : "Start polling"}</button>
               </div>
             </aside>
 
@@ -375,7 +405,7 @@ export default function Home() {
         {activeView === "rtu" && (
           <div className="rtuWorkspace">
             <div className="rtuHeader">
-              <ToolHeading eyebrow="USB / RS485" title="Modbus RTU" meta="Native Core serial access" />
+              <ToolHeading eyebrow="USB / RS485" title="Modbus RTU" meta="Browser Web Serial + Native Core" />
               <button type="button" className="secondaryAction" disabled={busy || !engine || engine?.modbusRtu.masterOpen || engine?.modbusRtu.slaveOpen} onClick={refreshSerialPorts}>Refresh USB devices</button>
             </div>
             <div className="serialGrid">
@@ -389,11 +419,16 @@ export default function Home() {
 
             <div className="rtuModeGrid">
               <div className="modePanel">
-                <div><strong>RTU Master</strong><span>{engine?.modbusRtu.masterOpen ? "Serial session open" : "Use Poll with RTU transport"}</span></div>
-                <span className={`modeBadge ${engine?.modbusRtu.masterOpen ? "live" : ""}`}>{engine?.modbusRtu.masterOpen ? "OPEN" : "CLOSED"}</span>
+                <div><strong>RTU Master</strong><span>{browserSerialConnected ? browserSerialLabel : engine?.modbusRtu.masterOpen ? "Native Core serial session open" : "Browser USB or Native Core"}</span></div>
+                <span className={`modeBadge ${rtuMasterConnected ? "live" : ""}`}>{rtuMasterConnected ? "OPEN" : "CLOSED"}</span>
                 <div className="modeActions">
-                  <button type="button" className="primaryAction" disabled={busy || !engine || !serial.port || engine?.modbusRtu.slaveOpen || engine?.modbusRtu.masterOpen} onClick={connectUsb}>Connect USB</button>
-                  <button type="button" className="dangerAction" disabled={busy || !engine?.modbusRtu.masterOpen} onClick={disconnectUsb}>Disconnect USB</button>
+                  <button type="button" className="primaryAction" disabled={busy || browserSerialConnected || Boolean(engine?.modbusRtu.masterOpen)} onClick={() => void connectUsb()}>Connect USB</button>
+                  <button type="button" className="dangerAction" disabled={busy || !browserSerialConnected} onClick={() => void disconnectUsb()}>Disconnect USB</button>
+                </div>
+                <p className="contextNote">Connect USB opens the Chrome/Edge serial chooser. No Core connection is required for Browser RTU.</p>
+                <div className="modeActions">
+                  <button type="button" className="secondaryAction" disabled={busy || !engine || !serial.port || browserSerialConnected || engine?.modbusRtu.masterOpen || engine?.modbusRtu.slaveOpen} onClick={connectNativeRtu}>Connect via Core</button>
+                  <button type="button" className="secondaryAction" disabled={busy || !engine?.modbusRtu.masterOpen} onClick={disconnectNativeRtu}>Disconnect Core</button>
                 </div>
               </div>
               <div className="modePanel">
