@@ -1,0 +1,1 @@
+../../docs/agent/SWS_PROJECT_MAP.md

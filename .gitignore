@@ -1,0 +1,17 @@
+node_modules/
+.next/
+dist/
+bin/
+.vercel/
+.agent-state/
+.env
+.env.*
+!.env.example
+.DS_Store
+coverage/
+*.log
+*.tsbuildinfo
+.tmp-ui/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+graft/

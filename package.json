@@ -1,0 +1,20 @@
+{
+  "name": "modbus-console",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.10.0",
+  "scripts": {
+    "dev": "pnpm --filter @modbus-console/web dev",
+    "typecheck": "pnpm --filter @modbus-console/web typecheck && cd core && go vet ./...",
+    "test": "cd core && go test ./...",
+    "lint": "pnpm --filter @modbus-console/web lint && cd core && golangci-lint run ./...",
+    "build": "pnpm --filter @modbus-console/web build && cd core && go build -o ../bin/modbus-console-core ./cmd/modbus-console-core",
+    "core:run": "cd core && go run ./cmd/modbus-console-core",
+    "preflight": "./scripts/preflight.sh",
+    "release:check": "./scripts/release-check.sh",
+    "full": "./scripts/full-check.sh"
+  },
+  "devDependencies": {
+    "vercel": "59.10.0"
+  }
+}
